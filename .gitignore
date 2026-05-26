@@ -1,0 +1,97 @@
+# ESP32/ESP-IDF Build Files and Directories
+
+# Build directories
+**/build/
+**/build_*/
+
+# Compiled object files
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+
+# Executables and binaries
+*.elf
+*.bin
+*.hex
+*.map
+*.out
+
+# ESP-IDF specific files
+sdkconfig
+sdkconfig.old
+sdkconfig.defaults
+sdkconfig.defaults.*
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+compile_commands.json
+
+# Dependencies lock files
+dependencies.lock
+
+# Partition table files
+partition_table/
+*.bin
+
+# Flasher arguments
+flash_args
+flash_args.in
+flash_app_args
+flash_bootloader_args
+flash_project_args
+flasher_args.json
+flasher_args.json.in
+
+# Kconfig files
+kconfigs_projbuild.in
+kconfigs.in
+
+# Linker files
+ldgen_libraries
+ldgen_libraries.in
+
+# Assembly files generated
+*.S
+*.s
+
+# Python compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# IDE specific files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Project specific ignores
+# SSL certificates and keys (if any)
+*.pem
+*.key
+*.crt
+*.csr
+
+# MQTT SSL specific build artifacts
+Software/ssl/build/
+
+# Other common build artifacts
+*.log
+*.tmp
+*.temp
