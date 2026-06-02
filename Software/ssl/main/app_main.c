@@ -24,6 +24,8 @@
 #include "esp_ota_ops.h"
 #include <sys/param.h>
 
+#include "driver/temperature_sensor.h"
+
 static const char *TAG = "mqtts_example";
 
 
@@ -33,6 +35,8 @@ static const uint8_t mqtt_eclipseprojects_io_pem_start[]  = "-----BEGIN CERTIFIC
 extern const uint8_t mqtt_eclipseprojects_io_pem_start[]   asm("_binary_mqtt_eclipseprojects_io_pem_start");
 #endif
 extern const uint8_t mqtt_eclipseprojects_io_pem_end[]   asm("_binary_mqtt_eclipseprojects_io_pem_end");
+
+esp_mqtt_client_handle_t global_client;
 
 //
 // Note: this function is for testing purposes only publishing part of the active partition
@@ -65,6 +69,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
     ESP_LOGD(TAG, "Event dispatched from event loop base=%s, event_id=%" PRIi32, base, event_id);
     esp_mqtt_event_handle_t event = event_data;
     esp_mqtt_client_handle_t client = event->client;
+    global_client = client;
     int msg_id;
     switch ((esp_mqtt_event_id_t)event_id) {
     case MQTT_EVENT_CONNECTED:
@@ -142,6 +147,31 @@ static void mqtt_app_start(void)
     esp_mqtt_client_start(client);
 }
 
+void temp_task(void *p) {
+    ESP_LOGI(TAG, "Install temperature sensor, expected temp ranger range: 10~50 ℃");
+    temperature_sensor_handle_t temp_sensor = NULL;
+    temperature_sensor_config_t temp_sensor_config = TEMPERATURE_SENSOR_CONFIG_DEFAULT(10, 50);
+    ESP_ERROR_CHECK(temperature_sensor_install(&temp_sensor_config, &temp_sensor));
+
+    ESP_LOGI(TAG, "Enable temperature sensor");
+    ESP_ERROR_CHECK(temperature_sensor_enable(temp_sensor));
+
+    float tsens_value;
+    int count = 0;
+    while (1) {
+        ESP_ERROR_CHECK(temperature_sensor_get_celsius(temp_sensor, &tsens_value));
+        ESP_LOGI(TAG, "Temperature value %.02f ℃", tsens_value);
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        count++;
+        if (count == 5) {
+            char buf[20];
+            sprintf(buf, "%.02f", tsens_value);
+            esp_mqtt_client_publish(global_client, "/topic/qos0/updata", buf, 0, 0, 0);
+            count = 0;
+        }
+    }
+}
+
 void app_main(void)
 {
     ESP_LOGI(TAG, "[APP] Startup..");
@@ -167,4 +197,6 @@ void app_main(void)
     ESP_ERROR_CHECK(example_connect());
 
     mqtt_app_start();
+
+    xTaskCreate(temp_task, "temp_task", 2048, NULL, 5, NULL);
 }
