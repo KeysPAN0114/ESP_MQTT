@@ -1,0 +1,180 @@
+import { Button, VerticalBox, HorizontalBox, GroupBox, LineEdit } from "std-widgets.slint";
+
+export component AppWindow inherits Window {
+    title: "ESP MQTT Client";
+    preferred-width: 500px;
+    preferred-height: 550px;
+
+    // MQTT 状态属性
+    in-out property <bool> is-connected: false;
+    in-out property <string> connection-status: "未连接";
+    in-out property <string> broker-info: "";
+    in-out property <string> last-topic: "";
+    in-out property <string> last-message: "";
+    in-out property <int> message-count: 0;
+
+    // 发布相关属性
+    in-out property <string> publish-topic: "test/topic";
+    in-out property <string> publish-message: "Hello from Slint!";
+    in-out property <int> publish-count: 0;
+
+    // 回调：发布消息到 MQTT（参数：主题、消息内容）
+    callback publish-clicked(string, string);
+
+    // 原有的计数器
+    in-out property <int> counter: 42;
+    callback request-increase-value();
+
+    VerticalBox {
+        spacing: 8px;
+        padding: 12px;
+
+        // MQTT 连接状态区域
+        GroupBox {
+            title: "MQTT 连接状态";
+            VerticalBox {
+                spacing: 6px;
+                padding: 4px;
+
+                HorizontalBox {
+                    spacing: 8px;
+                    Text {
+                        text: "状态:";
+                        vertical-alignment: center;
+                    }
+                    Rectangle {
+                        width: 14px;
+                        height: 14px;
+                        border-radius: 7px;
+                        background: root.is-connected ? #22c55e : #ef4444;
+                    }
+                    Text {
+                        text: root.connection-status;
+                        color: root.is-connected ? #22c55e : #ef4444;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                    }
+                }
+
+                HorizontalBox {
+                    spacing: 8px;
+                    Text {
+                        text: "服务器:";
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: root.broker-info;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+
+        // 消息区域
+        GroupBox {
+            title: "接收到的消息";
+            VerticalBox {
+                spacing: 6px;
+                padding: 4px;
+
+                HorizontalBox {
+                    spacing: 8px;
+                    Text {
+                        text: "接收消息数:";
+                    }
+                    Text {
+                        text: "\{root.message-count}";
+                        font-weight: 700;
+                    }
+                }
+
+                HorizontalBox {
+                    spacing: 8px;
+                    Text {
+                        text: "主题:";
+                    }
+                    Text {
+                        text: root.last-topic;
+                        overflow: elide;
+                    }
+                }
+
+                HorizontalBox {
+                    spacing: 8px;
+                    Text {
+                        text: "内容:";
+                    }
+                    Text {
+                        text: root.last-message;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+        }
+
+        // 发布消息区域
+        GroupBox {
+            title: "发布消息";
+            VerticalBox {
+                spacing: 6px;
+                padding: 4px;
+
+                HorizontalBox {
+                    spacing: 8px;
+                    Text {
+                        text: "主题:";
+                        vertical-alignment: center;
+                    }
+                    LineEdit {
+                        text <=> root.publish-topic;
+                    }
+                }
+
+                HorizontalBox {
+                    spacing: 8px;
+                    Text {
+                        text: "消息:";
+                        vertical-alignment: center;
+                    }
+                    LineEdit {
+                        text <=> root.publish-message;
+                    }
+                }
+
+                HorizontalBox {
+                    spacing: 8px;
+                    Button {
+                        text: "发布到 MQTT";
+                        clicked => {
+                            root.publish-clicked(root.publish-topic, root.publish-message);
+                        }
+                    }
+                    Text {
+                        text: "已发布: \{root.publish-count}";
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+
+        // 原有的计数器部分
+        GroupBox {
+            title: "测试计数器";
+            VerticalBox {
+                spacing: 6px;
+                padding: 4px;
+
+                Text {
+                    text: "Counter: \{root.counter}";
+                }
+
+                Button {
+                    text: "Increase value";
+                    clicked => {
+                        root.request-increase-value();
+                    }
+                }
+            }
+        }
+    }
+}

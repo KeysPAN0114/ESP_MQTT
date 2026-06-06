@@ -1,0 +1,23 @@
+[package]
+name = "app-client"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+rumqttc = { version = "0.25.1", features = ["use-rustls"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+rustls = "0.23"
+rustls-pemfile = "2"
+rustls-native-certs = "0.8"
+env_logger = "0.11"
+log = "0.4"
+slint = "=1.14.1"
+
+[build-dependencies]
+slint-build = "1.14.1"
+
+[profile.release]
+codegen-units = 1
+lto = true
