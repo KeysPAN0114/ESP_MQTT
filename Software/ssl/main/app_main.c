@@ -25,8 +25,33 @@
 #include <sys/param.h>
 
 #include "driver/temperature_sensor.h"
+#include "driver/ledc.h"
+
+#include <aht.h>
+#include <i2cdev.h>
+
+#define LED_GPIO_PIN        GPIO_NUM_3
+#define LEDC_TIMER          LEDC_TIMER_0
+#define LEDC_MODE           LEDC_LOW_SPEED_MODE
+#define LEDC_CHANNEL        LEDC_CHANNEL_0
+#define LEDC_DUTY_RES       LEDC_TIMER_10_BIT  /* 10-bit 分辨率: 0~1023 */
+#define LEDC_FREQUENCY      (5000)              /* PWM 频率 5kHz */
+#define LEDC_MAX_DUTY       ((1 << 10) - 1)     /* 1023 */
 
 static const char *TAG = "mqtts_example";
+
+/**
+ * @brief 设置 LED 亮度
+ * @param percent 亮度百分比 0~100，0 为熄灭，100 为最亮
+ */
+void led_set_brightness(uint32_t percent)
+{
+    if (percent > 100) percent = 100;
+    uint32_t duty = (LEDC_MAX_DUTY * percent) / 100;
+    ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, duty);
+    ledc_update_duty(LEDC_MODE, LEDC_CHANNEL);
+    ESP_LOGI(TAG, "LED brightness set to %lu%% (duty=%lu)", percent, duty);
+}
 
 
 #if CONFIG_BROKER_CERTIFICATE_OVERRIDDEN == 1
@@ -172,6 +197,79 @@ void temp_task(void *p) {
     }
 }
 
+/* ======================== AHT10 Task (使用 esp-idf-lib/aht 组件) ======================== */
+
+/*
+ * ESP32-C3 引脚配置
+ * 安全可用: GPIO_2, GPIO_3, GPIO_4, GPIO_5, GPIO_18, GPIO_19
+ * 禁止使用: GPIO_6~11 (SPI Flash)
+ */
+#define AHT10_I2C_PORT      I2C_NUM_0
+#define AHT10_SDA_PIN       GPIO_NUM_5
+#define AHT10_SCL_PIN       GPIO_NUM_6
+
+void aht10_task(void *p)
+{
+    aht_t dev = { 0 };
+    dev.type = AHT_TYPE_AHT1x;
+    dev.mode = AHT_MODE_NORMAL;
+
+    /* 初始化 AHT10 I2C 描述符 */
+    esp_err_t ret = aht_init_desc(&dev, AHT_I2C_ADDRESS_GND, AHT10_I2C_PORT, AHT10_SDA_PIN, AHT10_SCL_PIN);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "aht_init_desc failed: %s", esp_err_to_name(ret));
+        vTaskDelete(NULL);
+        return;
+    }
+
+    /* 等待 AHT10 上电稳定（数据手册要求至少 20ms，实际建议 300ms+） */
+    vTaskDelay(pdMS_TO_TICKS(500));
+
+    /* 初始化传感器（带重试，AHT10 首次通信可能失败） */
+    bool init_ok = false;
+    for (int retry = 0; retry < 5; retry++) {
+        ret = aht_init(&dev);
+        if (ret == ESP_OK) {
+            init_ok = true;
+            break;
+        }
+        ESP_LOGW(TAG, "aht_init attempt %d failed: %s, retrying...", retry + 1, esp_err_to_name(ret));
+        vTaskDelay(pdMS_TO_TICKS(200));
+    }
+
+    if (!init_ok) {
+        ESP_LOGW(TAG, "aht_init failed after retries, will try to read anyway");
+    }
+
+    /* 检查校准状态 */
+    bool busy = false, calibrated = false;
+    ret = aht_get_status(&dev, &busy, &calibrated);
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "AHT10 status: busy=%d, calibrated=%s", busy, calibrated ? "yes" : "no");
+    }
+
+    ESP_LOGI(TAG, "AHT10 initialized successfully");
+
+    float temperature, humidity;
+    int count = 0;
+    while (1) {
+        ret = aht_get_data(&dev, &temperature, &humidity);
+        if (ret == ESP_OK) {
+            ESP_LOGI(TAG, "AHT10 -> Temp: %.2f ℃, Humidity: %.2f %%RH", temperature, humidity);
+            count++;
+            if (count >= 5) {
+                char buf[64];
+                snprintf(buf, sizeof(buf), "{\"temp\":%.2f,\"humi\":%.2f}", temperature, humidity);
+                esp_mqtt_client_publish(global_client, "/topic/qos0/aht10", buf, 0, 0, 0);
+                count = 0;
+            }
+        } else {
+            ESP_LOGE(TAG, "AHT10 read failed: %s", esp_err_to_name(ret));
+        }
+        vTaskDelay(pdMS_TO_TICKS(2000));
+    }
+}
+
 void app_main(void)
 {
     ESP_LOGI(TAG, "[APP] Startup..");
@@ -196,7 +294,35 @@ void app_main(void)
      */
     ESP_ERROR_CHECK(example_connect());
 
+    /* 初始化 i2cdev 库（esp-idf-lib 的 I2C 设备驱动必须先调用此函数） */
+    esp_err_t i2c_ret = i2cdev_init();
+    if (i2c_ret != ESP_OK) {
+        ESP_LOGW(TAG, "i2cdev_init: %s (may already be initialized)", esp_err_to_name(i2c_ret));
+    }
+
+    /* 配置 LED PWM (LEDC) 用于 IO3 调光 */
+    ledc_timer_config_t ledc_timer = {
+        .speed_mode       = LEDC_MODE,
+        .timer_num        = LEDC_TIMER,
+        .duty_resolution  = LEDC_DUTY_RES,
+        .freq_hz          = LEDC_FREQUENCY,
+        .clk_cfg          = LEDC_AUTO_CLK,
+    };
+    ledc_timer_config(&ledc_timer);
+
+    ledc_channel_config_t ledc_channel = {
+        .speed_mode     = LEDC_MODE,
+        .channel        = LEDC_CHANNEL,
+        .timer_sel      = LEDC_TIMER,
+        .gpio_num       = LED_GPIO_PIN,
+        .duty           = LEDC_MAX_DUTY / 2,   /* 初始 50% 亮度 */
+        .hpoint         = 0,
+    };
+    ledc_channel_config(&ledc_channel);
+    ESP_LOGI(TAG, "LED on GPIO%d PWM initialized at 50%% brightness", LED_GPIO_PIN);
+
     mqtt_app_start();
 
     xTaskCreate(temp_task, "temp_task", 2048, NULL, 5, NULL);
+    xTaskCreate(aht10_task, "aht10_task", 4096, NULL, 5, NULL);
 }

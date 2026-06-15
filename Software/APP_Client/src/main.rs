@@ -21,6 +21,14 @@ struct MqttStatus {
     last_message: String,
     message_count: i32,
     publish_count: i32,
+    // 灯光控制状态
+    light_on: bool,
+    light_pending: bool,         // 等待确认中
+    light_pending_value: bool,   // 等待确认的目标值
+    // 温湿度数据
+    temperature: String,
+    humidity: String,
+    sensor_topic: String,
 }
 
 // ============================================================================
@@ -80,6 +88,12 @@ fn main() {
         last_message: String::new(),
         message_count: 0,
         publish_count: 0,
+        light_on: false,
+        light_pending: false,
+        light_pending_value: false,
+        temperature: "--".to_string(),
+        humidity: "--".to_string(),
+        sensor_topic: "test/sensor".to_string(),
     }));
 
     // -----------------------------------------------------------------------
@@ -88,6 +102,9 @@ fn main() {
     //    - rx (Receiver)：在 MQTT 事件循环中接收并发布
     // -----------------------------------------------------------------------
     let (tx, rx) = tokio::sync::mpsc::channel::<(String, String)>(32);
+
+    // 灯光控制 channel：Slint 回调 → MQTT 发布灯光指令
+    let (light_tx, light_rx) = tokio::sync::mpsc::channel::<bool>(4);
 
     // -----------------------------------------------------------------------
     // 3. 创建 Slint UI
@@ -134,6 +151,33 @@ fn main() {
         }
     });
 
+    // 4c. 灯光开关切换回调
+    //     当用户点击灯光开关时，通过 light_tx 发送请求给 MQTT 后台任务
+    ui.on_light_toggled({
+        let light_tx = light_tx.clone();
+        let status = mqtt_status.clone();
+        move |checked: bool| {
+            log::info!("UI 请求灯光切换: {}", checked);
+            // 设置等待确认状态
+            {
+                let mut s = status.lock().unwrap();
+                s.light_pending = true;
+                s.light_pending_value = checked;
+            }
+            // 发送灯光控制请求
+            match light_tx.try_send(checked) {
+                Ok(_) => {
+                    log::info!("灯光切换请求已发送");
+                }
+                Err(e) => {
+                    log::error!("发送灯光切换请求失败: {}", e);
+                    let mut s = status.lock().unwrap();
+                    s.light_pending = false;
+                }
+            }
+        }
+    });
+
     // -----------------------------------------------------------------------
     // 5. 启动定时器：每 200ms 轮询共享状态，更新 Slint UI
     //    这是 MQTT 后台线程 → UI 线程的数据流向
@@ -154,6 +198,13 @@ fn main() {
                 ui.set_last_message(status.last_message.as_str().into());
                 ui.set_message_count(status.message_count);
                 ui.set_publish_count(status.publish_count);
+                // 同步灯光状态到 UI
+                ui.set_light_on(status.light_on);
+                ui.set_light_pending(status.light_pending);
+                // 同步温湿度到 UI
+                ui.set_temperature(status.temperature.as_str().into());
+                ui.set_humidity(status.humidity.as_str().into());
+                ui.set_sensor_topic(status.sensor_topic.as_str().into());
             }
         },
     );
@@ -168,7 +219,7 @@ fn main() {
 
     let status_for_mqtt = mqtt_status.clone();
     rt.spawn(async move {
-        mqtt_event_loop(status_for_mqtt, rx).await;
+        mqtt_event_loop(status_for_mqtt, rx, light_rx).await;
     });
 
     // -----------------------------------------------------------------------
@@ -193,6 +244,7 @@ fn main() {
 async fn mqtt_event_loop(
     status: Arc<Mutex<MqttStatus>>,
     mut rx: tokio::sync::mpsc::Receiver<(String, String)>,
+    mut light_rx: tokio::sync::mpsc::Receiver<bool>,
 ) {
     let broker = "r07831cc.ala.cn-hangzhou.emqxsl.cn";
     let port = 8883u16;
@@ -230,6 +282,20 @@ async fn mqtt_event_loop(
         log::info!("已订阅主题: test/topic");
     }
 
+    // 订阅灯光控制主题
+    if let Err(e) = client.subscribe("test/light", QoS::AtLeastOnce).await {
+        log::error!("订阅灯光主题失败: {:?}", e);
+    } else {
+        log::info!("已订阅主题: test/light");
+    }
+
+    // 订阅温湿度传感器主题
+    if let Err(e) = client.subscribe("test/sensor", QoS::AtLeastOnce).await {
+        log::error!("订阅传感器主题失败: {:?}", e);
+    } else {
+        log::info!("已订阅主题: test/sensor");
+    }
+
     // 发布初始测试消息
     if let Err(e) = client
         .publish("test/topic", QoS::AtLeastOnce, false, "Hello TLS with Auth!")
@@ -257,10 +323,38 @@ async fn mqtt_event_loop(
                         Event::Incoming(Incoming::Publish(p)) => {
                             let payload = String::from_utf8_lossy(&p.payload);
                             log::info!("[MQTT] 收到消息: 主题={}, 内容={}", p.topic, payload);
-                            let mut s = status.lock().unwrap();
-                            s.message_count += 1;
-                            s.last_topic = p.topic.clone();
-                            s.last_message = payload.to_string();
+
+                            // 处理灯光控制消息: {light:0} 或 {light:1}
+                            if p.topic == "test/light" {
+                                let light_val = parse_light_message(&payload);
+                                if let Some(is_on) = light_val {
+                                    log::info!("[MQTT] 灯光状态: {}", if is_on { "开" } else { "关" });
+                                    let mut s = status.lock().unwrap();
+                                    s.light_on = is_on;
+                                    s.light_pending = false;  // 收到确认，清除等待状态
+                                    s.last_topic = p.topic.clone();
+                                    s.last_message = payload.to_string();
+                                    s.message_count += 1;
+                                }
+                            } else if p.topic == "test/sensor" {
+                                // 处理温湿度传感器消息: {temp:25.5,humi:60.0}
+                                let sensor = parse_sensor_message(&payload);
+                                if let Some((temp, humi)) = sensor {
+                                    log::info!("[MQTT] 传感器数据: 温度={}, 湿度={}", temp, humi);
+                                    let mut s = status.lock().unwrap();
+                                    s.temperature = temp;
+                                    s.humidity = humi;
+                                    s.sensor_topic = p.topic.clone();
+                                    s.last_topic = p.topic.clone();
+                                    s.last_message = payload.to_string();
+                                    s.message_count += 1;
+                                }
+                            } else {
+                                let mut s = status.lock().unwrap();
+                                s.message_count += 1;
+                                s.last_topic = p.topic.clone();
+                                s.last_message = payload.to_string();
+                            }
                         }
                         Event::Incoming(Incoming::SubAck(sub_ack)) => {
                             log::info!("[MQTT] 订阅确认: {:?}", sub_ack);
@@ -302,6 +396,82 @@ async fn mqtt_event_loop(
                     }
                 }
             }
+
+            // 分支 3：处理来自 Slint UI 的灯光控制请求
+            // 当用户点击灯光开关时，发送 {light:0} 或 {light:1}
+            Some(light_on) = light_rx.recv() => {
+                let light_msg = if light_on { "{light:1}" } else { "{light:0}" };
+                log::info!("[UI→MQTT] 灯光控制: {}", light_msg);
+                match client.publish("test/light", QoS::AtLeastOnce, false, light_msg.as_bytes()).await {
+                    Ok(_) => {
+                        log::info!("[UI→MQTT] 灯光控制消息发布成功");
+                    }
+                    Err(e) => {
+                        log::error!("[UI→MQTT] 灯光控制消息发布失败: {:?}", e);
+                        // 发布失败，清除等待状态
+                        let mut s = status.lock().unwrap();
+                        s.light_pending = false;
+                    }
+                }
+            }
         }
     }
+}
+
+// ============================================================================
+// 解析灯光消息: {light:0} 或 {light:1}
+// ============================================================================
+fn parse_light_message(payload: &str) -> Option<bool> {
+    // 支持多种格式: {light:0}, {light:1}, {"light":0}, {"light":1}
+    let trimmed = payload.trim();
+    if trimmed.starts_with('{') && trimmed.ends_with('}') {
+        let inner = &trimmed[1..trimmed.len() - 1];
+        let parts: Vec<&str> = inner.split(':').collect();
+        if parts.len() == 2 {
+            let key = parts[0].trim().trim_matches('"');
+            let val = parts[1].trim().trim_matches('"');
+            if key == "light" {
+                return match val {
+                    "1" => Some(true),
+                    "0" => Some(false),
+                    _ => None,
+                };
+            }
+        }
+    }
+    None
+}
+
+// ============================================================================
+// 解析温湿度传感器消息: {temp:25.5,humi:60.0}
+// 支持格式: {temp:25.5,humi:60.0}, {"temp":25.5,"humi":60.0}
+// ============================================================================
+fn parse_sensor_message(payload: &str) -> Option<(String, String)> {
+    let trimmed = payload.trim();
+    if trimmed.starts_with('{') && trimmed.ends_with('}') {
+        let inner = &trimmed[1..trimmed.len() - 1];
+        let mut temp: Option<String> = None;
+        let mut humi: Option<String> = None;
+
+        for part in inner.split(',') {
+            let kv: Vec<&str> = part.split(':').collect();
+            if kv.len() == 2 {
+                let key = kv[0].trim().trim_matches('"');
+                let val = kv[1].trim().trim_matches('"');
+                match key {
+                    "temp" => temp = Some(val.to_string()),
+                    "humi" => humi = Some(val.to_string()),
+                    _ => {}
+                }
+            }
+        }
+
+        if temp.is_some() || humi.is_some() {
+            return Some((
+                temp.unwrap_or_else(|| "--".to_string()),
+                humi.unwrap_or_else(|| "--".to_string()),
+            ));
+        }
+    }
+    None
 }
