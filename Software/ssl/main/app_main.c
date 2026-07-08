@@ -11,6 +11,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
+#include <stdlib.h>
 #include "esp_system.h"
 #include "esp_partition.h"
 #include "nvs_flash.h"
@@ -37,11 +38,15 @@
 #define LEDC_DUTY_RES       LEDC_TIMER_10_BIT  /* 10-bit 分辨率: 0~1023 */
 #define LEDC_FREQUENCY      (5000)              /* PWM 频率 5kHz */
 #define LEDC_MAX_DUTY       ((1 << 10) - 1)     /* 1023 */
+#define LED_FADE_MS         (1000)              /* 渐变时长 1 秒 */
 
 static const char *TAG = "mqtts_example";
 
+static volatile uint32_t s_current_duty = LEDC_MAX_DUTY / 2;  /* 当前亮度占空比 */
+static volatile bool     s_led_on = true;                      /* 灯当前开关状态 */
+
 /**
- * @brief 设置 LED 亮度
+ * @brief 立即设置 LED 亮度（无渐变）
  * @param percent 亮度百分比 0~100，0 为熄灭，100 为最亮
  */
 void led_set_brightness(uint32_t percent)
@@ -50,7 +55,58 @@ void led_set_brightness(uint32_t percent)
     uint32_t duty = (LEDC_MAX_DUTY * percent) / 100;
     ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, duty);
     ledc_update_duty(LEDC_MODE, LEDC_CHANNEL);
+    s_current_duty = duty;
+    s_led_on = (percent > 0);
     ESP_LOGI(TAG, "LED brightness set to %lu%% (duty=%lu)", percent, duty);
+}
+
+/**
+ * @brief 渐变设置 LED 亮度
+ * @param target_percent 目标亮度百分比 0~100
+ * @param fade_time_ms   渐变时长（毫秒）
+ */
+void led_fade_to(uint32_t target_percent, uint32_t fade_time_ms)
+{
+    if (target_percent > 100) target_percent = 100;
+    uint32_t target_duty = (LEDC_MAX_DUTY * target_percent) / 100;
+
+    ledc_set_fade_with_time(LEDC_MODE, LEDC_CHANNEL, target_duty, fade_time_ms);
+    ledc_fade_start(LEDC_MODE, LEDC_CHANNEL, LEDC_FADE_NO_WAIT);
+
+    s_current_duty = target_duty;
+    s_led_on = (target_percent > 0);
+    ESP_LOGI(TAG, "LED fading to %lu%% (duty=%lu) in %lu ms", target_percent, target_duty, fade_time_ms);
+}
+
+/**
+ * @brief 渐变开灯（从当前亮度渐变到 100%）
+ */
+void led_fade_on(void)
+{
+    led_fade_to(100, LED_FADE_MS);
+}
+
+/**
+ * @brief 渐变关灯（从当前亮度渐变到 0%）
+ */
+void led_fade_off(void)
+{
+    led_fade_to(0, LED_FADE_MS);
+}
+
+/**
+ * @brief 通过 light 值控制灯的渐变开关
+ * @param light 0=渐灭，非0=渐亮
+ */
+void led_light_control(int light)
+{
+    if (light) {
+        ESP_LOGI(TAG, "Light ON (fading in)");
+        led_fade_on();
+    } else {
+        ESP_LOGI(TAG, "Light OFF (fading out)");
+        led_fade_off();
+    }
 }
 
 
@@ -99,7 +155,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
     switch ((esp_mqtt_event_id_t)event_id) {
     case MQTT_EVENT_CONNECTED:
         ESP_LOGI(TAG, "MQTT_EVENT_CONNECTED");
-        msg_id = esp_mqtt_client_subscribe(client, "/topic/qos0", 0);
+        msg_id = esp_mqtt_client_subscribe(client, "/topic/appcli/up", 0);
         ESP_LOGI(TAG, "sent subscribe successful, msg_id=%d", msg_id);
 
         msg_id = esp_mqtt_client_subscribe(client, "/topic/qos1", 1);
@@ -114,7 +170,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 
     case MQTT_EVENT_SUBSCRIBED:
         ESP_LOGI(TAG, "MQTT_EVENT_SUBSCRIBED, msg_id=%d, return code=0x%02x ", event->msg_id, (uint8_t)*event->data);
-        msg_id = esp_mqtt_client_publish(client, "/topic/qos0", "data", 0, 0, 0);
+        msg_id = esp_mqtt_client_publish(client, "/topic/espcli/up", "data", 0, 0, 0);
         ESP_LOGI(TAG, "sent publish successful, msg_id=%d", msg_id);
         break;
     case MQTT_EVENT_UNSUBSCRIBED:
@@ -127,6 +183,35 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         ESP_LOGI(TAG, "MQTT_EVENT_DATA");
         printf("TOPIC=%.*s\r\n", event->topic_len, event->topic);
         printf("DATA=%.*s\r\n", event->data_len, event->data);
+
+        /* 处理 /topic/appcli/up 主题的 light 控制指令 */
+        if (event->topic_len == (int)strlen("/topic/appcli/up") &&
+            strncmp(event->topic, "/topic/appcli/up", event->topic_len) == 0) {
+            /* 将 data 复制到 null-terminated 缓冲区以便安全解析 */
+            char data_buf[256];
+            int copy_len = event->data_len < (int)(sizeof(data_buf) - 1) ? event->data_len : (int)(sizeof(data_buf) - 1);
+            memcpy(data_buf, event->data, copy_len);
+            data_buf[copy_len] = '\0';
+
+            /* 解析 {light:x} 格式，x 为 0 或非0 */
+            const char *light_key = strstr(data_buf, "\"light\"");
+            if (light_key) {
+                /* 跳过 "light" 和冒号 */
+                const char *colon = strchr(light_key, ':');
+                if (colon) {
+                    colon++;  /* 跳过 ':' */
+                    /* 跳过空格 */
+                    while (*colon == ' ') colon++;
+                    int light_val = atoi(colon);
+                    ESP_LOGI(TAG, "Received light command: %d", light_val);
+                    led_light_control(light_val);
+                }
+            }
+            /* 回复同样的数据到上行主题 */
+            esp_mqtt_client_publish(global_client, "/topic/espcli/up", data_buf, 0, 0, 0);
+            ESP_LOGI(TAG, "Light control echo sent: %s", data_buf);
+        }
+
         if (strncmp(event->data, "send binary please", event->data_len) == 0) {
             ESP_LOGI(TAG, "Sending the binary");
             send_binary(client);
@@ -187,13 +272,13 @@ void temp_task(void *p) {
         ESP_ERROR_CHECK(temperature_sensor_get_celsius(temp_sensor, &tsens_value));
         ESP_LOGI(TAG, "Temperature value %.02f ℃", tsens_value);
         vTaskDelay(pdMS_TO_TICKS(1000));
-        count++;
-        if (count == 5) {
-            char buf[20];
-            sprintf(buf, "%.02f", tsens_value);
-            esp_mqtt_client_publish(global_client, "/topic/qos0/updata", buf, 0, 0, 0);
-            count = 0;
-        }
+        // count++;
+        // if (count == 5) {
+        //     char buf[20];
+        //     sprintf(buf, "%.02f", tsens_value);
+            // esp_mqtt_client_publish(global_client, "/topic/espcli/up", buf, 0, 0, 0);
+        //     count = 0;
+        // }
     }
 }
 
@@ -260,7 +345,7 @@ void aht10_task(void *p)
             if (count >= 5) {
                 char buf[64];
                 snprintf(buf, sizeof(buf), "{\"temp\":%.2f,\"humi\":%.2f}", temperature, humidity);
-                esp_mqtt_client_publish(global_client, "/topic/qos0/aht10", buf, 0, 0, 0);
+                esp_mqtt_client_publish(global_client, "/topic/espcli/up", buf, 0, 0, 0);
                 count = 0;
             }
         } else {
@@ -319,7 +404,10 @@ void app_main(void)
         .hpoint         = 0,
     };
     ledc_channel_config(&ledc_channel);
-    ESP_LOGI(TAG, "LED on GPIO%d PWM initialized at 50%% brightness", LED_GPIO_PIN);
+
+    /* 安装 LEDC 渐变功能 */
+    ledc_fade_func_install(0);
+    ESP_LOGI(TAG, "LED on GPIO%d PWM initialized at 50%% brightness (fade enabled)", LED_GPIO_PIN);
 
     mqtt_app_start();
 

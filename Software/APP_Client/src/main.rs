@@ -290,10 +290,10 @@ async fn mqtt_event_loop(
     }
 
     // 订阅温湿度传感器主题
-    if let Err(e) = client.subscribe("test/sensor", QoS::AtLeastOnce).await {
+    if let Err(e) = client.subscribe("/topic/espcli/up", QoS::AtLeastOnce).await {
         log::error!("订阅传感器主题失败: {:?}", e);
     } else {
-        log::info!("已订阅主题: test/sensor");
+        log::info!("已订阅主题: /topic/espcli/up");
     }
 
     // 发布初始测试消息
@@ -324,8 +324,8 @@ async fn mqtt_event_loop(
                             let payload = String::from_utf8_lossy(&p.payload);
                             log::info!("[MQTT] 收到消息: 主题={}, 内容={}", p.topic, payload);
 
-                            // 处理灯光控制消息: {light:0} 或 {light:1}
-                            if p.topic == "test/light" {
+                            if p.topic == "/topic/espcli/up" {
+                                // 先尝试解析灯光控制消息: {light:0} 或 {light:1}
                                 let light_val = parse_light_message(&payload);
                                 if let Some(is_on) = light_val {
                                     log::info!("[MQTT] 灯光状态: {}", if is_on { "开" } else { "关" });
@@ -335,19 +335,25 @@ async fn mqtt_event_loop(
                                     s.last_topic = p.topic.clone();
                                     s.last_message = payload.to_string();
                                     s.message_count += 1;
-                                }
-                            } else if p.topic == "test/sensor" {
-                                // 处理温湿度传感器消息: {temp:25.5,humi:60.0}
-                                let sensor = parse_sensor_message(&payload);
-                                if let Some((temp, humi)) = sensor {
-                                    log::info!("[MQTT] 传感器数据: 温度={}, 湿度={}", temp, humi);
-                                    let mut s = status.lock().unwrap();
-                                    s.temperature = temp;
-                                    s.humidity = humi;
-                                    s.sensor_topic = p.topic.clone();
-                                    s.last_topic = p.topic.clone();
-                                    s.last_message = payload.to_string();
-                                    s.message_count += 1;
+                                } else {
+                                    // 灯光解析失败，尝试解析温湿度传感器消息: {"temp":25.5,"humi":60.0}
+                                    let sensor = parse_sensor_message(&payload);
+                                    if let Some((temp, humi)) = sensor {
+                                        log::info!("[MQTT] 传感器数据: 温度={}, 湿度={}", temp, humi);
+                                        let mut s = status.lock().unwrap();
+                                        s.temperature = temp;
+                                        s.humidity = humi;
+                                        s.sensor_topic = p.topic.clone();
+                                        s.last_topic = p.topic.clone();
+                                        s.last_message = payload.to_string();
+                                        s.message_count += 1;
+                                    } else {
+                                        // 既不是灯光也不是传感器，作为普通消息处理
+                                        let mut s = status.lock().unwrap();
+                                        s.last_topic = p.topic.clone();
+                                        s.last_message = payload.to_string();
+                                        s.message_count += 1;
+                                    }
                                 }
                             } else {
                                 let mut s = status.lock().unwrap();
@@ -400,9 +406,9 @@ async fn mqtt_event_loop(
             // 分支 3：处理来自 Slint UI 的灯光控制请求
             // 当用户点击灯光开关时，发送 {light:0} 或 {light:1}
             Some(light_on) = light_rx.recv() => {
-                let light_msg = if light_on { "{light:1}" } else { "{light:0}" };
+                let light_msg = if light_on { "{\"light\":1}" } else { "{\"light\":0}" };
                 log::info!("[UI→MQTT] 灯光控制: {}", light_msg);
-                match client.publish("test/light", QoS::AtLeastOnce, false, light_msg.as_bytes()).await {
+                match client.publish("/topic/appcli/up", QoS::AtLeastOnce, false, light_msg.as_bytes()).await {
                     Ok(_) => {
                         log::info!("[UI→MQTT] 灯光控制消息发布成功");
                     }
