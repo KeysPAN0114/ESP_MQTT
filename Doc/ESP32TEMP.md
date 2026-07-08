@@ -4,26 +4,28 @@
 
 ---
 
-## 目录
+## 📋 目录
 
 - [ESP32 上报芯片温度到 EMQX 平台](#esp32-上报芯片温度到-emqx-平台)
-  - [目录](#目录)
-  - [获取芯片温度并且上报](#获取芯片温度并且上报)
+  - [📋 目录](#-目录)
+  - [🌡️ 获取芯片温度并且上报](#️-获取芯片温度并且上报)
     - [1. 配置项目](#1-配置项目)
     - [2. 修改代码](#2-修改代码)
     - [3. 验证数据](#3-验证数据)
-  - [ESP32 订阅其他客户端发送的数据](#esp32-订阅其他客户端发送的数据)
-  - [外接AHT10上报温湿度](#外接aht10上报温湿度)
+  - [📨 ESP32 订阅其他客户端发送的数据](#-esp32-订阅其他客户端发送的数据)
+  - [🔌 外接 AHT10 上报温湿度](#-外接-aht10-上报温湿度)
     - [1. 硬件接线](#1-硬件接线)
     - [2. 添加 AHT 组件依赖](#2-添加-aht-组件依赖)
     - [3. 初始化 I2C 总线](#3-初始化-i2c-总线)
     - [4. 编写 AHT10 采集任务](#4-编写-aht10-采集任务)
+      - [代码说明](#代码说明)
     - [5. 创建任务并启动](#5-创建任务并启动)
     - [6. 验证数据](#6-验证数据)
+  - [📚 参考资料](#-参考资料)
 
 ---
 
-## 获取芯片温度并且上报
+## 🌡️ 获取芯片温度并且上报
 
 创建 ESP32 的温度传感器，并且获取芯片温度。
 
@@ -32,6 +34,8 @@
 在工程的 `main` 文件夹 [`CMakeLists.txt`](../Software/ssl/main/CMakeLists.txt) 中添加组件 `esp_driver_tsens`：
 
 ![项目配置](./img-2/esp-1.png)
+
+---
 
 ### 2. 修改代码
 
@@ -66,7 +70,9 @@ void temp_task(void *p) {
 }
 ```
 
-> **说明：** 每隔 5 秒（每秒采集一次，第 5 次时上报）将温度数据通过 MQTT 发布到 `/topic/qos0/updata` 主题。
+> **📝 说明**：每隔 5 秒（每秒采集一次，第 5 次时上报）将温度数据通过 MQTT 发布到 `/topic/qos0/updata` 主题。
+
+---
 
 ### 3. 验证数据
 
@@ -80,7 +86,7 @@ void temp_task(void *p) {
 
 ---
 
-## ESP32 订阅其他客户端发送的数据
+## 📨 ESP32 订阅其他客户端发送的数据
 
 这部分的代码在 ESP32 的例程里面已经存在了，所以只需要在后台的在线调试发送数据到 ESP32 订阅的主题即可。
 
@@ -96,24 +102,24 @@ void temp_task(void *p) {
 
 ![ESP32 接收数据](./img-2/esp-3.png)
 
-## 外接AHT10上报温湿度
-
-> AHT10 是一款数字温湿度传感器，通过 I2C 接口与 ESP32 通信。本节介绍如何使用 [`esp-idf-lib/aht`](https://github.com/esp-idf-lib/esp-idf-lib) 组件驱动 AHT10，并将温湿度数据通过 MQTT 上报至 EMQX 平台。
-
 ---
+
+## 🔌 外接 AHT10 上报温湿度
+
+> [AHT10](https://github.com/esp-idf-lib/esp-idf-lib) 是一款数字温湿度传感器，通过 I2C 接口与 ESP32 通信。本节介绍如何使用 [`esp-idf-lib/aht`](https://github.com/esp-idf-lib/esp-idf-lib) 组件驱动 AHT10，并将温湿度数据通过 MQTT 上报至 EMQX 平台。
 
 ### 1. 硬件接线
 
 AHT10 通过 I2C 与 ESP32-C3 连接，接线方式如下：
 
 | AHT10 引脚 | ESP32-C3 引脚 | 说明 |
-|:-----------:|:-------------:|:----:|
+|:-----------:|:-------------:|:-----|
 | VCC         | 3.3V          | 供电 |
 | GND         | GND           | 接地 |
 | SDA         | GPIO_5        | I2C 数据线 |
 | SCL         | GPIO_6        | I2C 时钟线 |
 
-> **注意：** ESP32-C3 的 GPIO_6~GPIO_11 被 SPI Flash 占用，请根据实际模组确认是否可用。如果不可用，请选择其他安全引脚（如 GPIO_2, GPIO_3, GPIO_4, GPIO_18, GPIO_19）。
+> **⚠️ 注意**：ESP32-C3 的 `GPIO_6` ~ `GPIO_11` 被 SPI Flash 占用，请根据实际模组确认是否可用。如果不可用，请选择其他安全引脚（如 `GPIO_2`、`GPIO_3`、`GPIO_4`、`GPIO_18`、`GPIO_19`）。
 
 ---
 
@@ -128,7 +134,7 @@ dependencies:
   esp-idf-lib/aht: ^1.0.8
 ```
 
-> **说明：** [`esp-idf-lib/aht`](https://components.espressif.com/components/esp-idf-lib/aht) 组件会自动拉取 `i2cdev` 和 `esp_idf_lib_helpers` 等依赖，无需手动添加。
+> **💡 提示**：[`esp-idf-lib/aht`](https://components.espressif.com/components/esp-idf-lib/aht) 组件会自动拉取 `i2cdev` 和 `esp_idf_lib_helpers` 等依赖，无需手动添加。
 
 ---
 
@@ -220,7 +226,7 @@ void aht10_task(void *p)
 }
 ```
 
-**代码说明：**
+#### 代码说明
 
 | 步骤 | 说明 |
 |:----:|:-----|
@@ -241,7 +247,7 @@ void aht10_task(void *p)
 xTaskCreate(aht10_task, "aht10_task", 4096, NULL, 5, NULL);
 ```
 
-> **说明：** AHT10 任务栈大小设为 4096 字节（比芯片温度任务的 2048 字节更大），因为 I2C 通信需要更多栈空间。
+> **📝 说明**：AHT10 任务栈大小设为 4096 字节（比芯片温度任务的 2048 字节更大），因为 I2C 通信需要更多栈空间。
 
 ---
 
@@ -258,3 +264,13 @@ I (1234) mqtts_example: AHT10 -> Temp: 25.36 ℃, Humidity: 58.12 %RH
 ```json
 {"temp":25.36,"humi":58.12}
 ```
+
+---
+
+## 📚 参考资料
+
+- [ESP-IDF 温度传感器驱动](https://docs.espressif.com/projects/esp-idf/zh_CN/latest/esp32/api-reference/peripherals/temp_sensor.html)
+- [esp-idf-lib/aht 组件](https://components.espressif.com/components/esp-idf-lib/aht)
+- [AHT10 数据手册](http://www.aosong.com/products-21.html)
+- [cJSON 库](https://github.com/DaveGamble/cJSON)
+- [MQTT 协议规范](https://mqtt.org/)

@@ -13,6 +13,7 @@
 - [ESP-IDF 安装](Doc/init.md) — 开发环境安装说明
 - [ESP32 MQTT 工程指南](Doc/ESP2MQTT.md) — 完整的图文教程
 - [ESP32 上报芯片温度](Doc/ESP32TEMP.md) — 温度传感器数据上报示例
+- [ESP32 LED 驱动与客户端交互](Doc/ESP32LED.md) — LED PWM 驱动与多客户端通信
 
 ---
 
@@ -130,12 +131,15 @@ ESP_MQTT/
 ├── Doc/                  # 项目文档
 │   ├── ESP2MQTT.md       # MQTT 工程指南
 │   ├── ESP32TEMP.md      # 温度上报教程
+│   ├── ESP32LED.md       # LED 驱动与客户端交互
 │   ├── init.md           # ESP-IDF 安装说明
 │   ├── img-1/            # 文档图片素材 1
-│   └── img-2/            # 文档图片素材 2
+│   ├── img-2/            # 文档图片素材 2
+│   └── img-3/            # 文档图片素材 3
 ├── Hardware/             # 硬件相关资料
 ├── Software/             # 软件工程代码
-│   └── ssl/              # TLS/SSL MQTT 示例工程
+│   ├── ssl/              # TLS/SSL MQTT 示例工程
+│   └── APP_Client/       # Rust 客户端应用
 ├── Readme.md             # 项目说明文档
 └── LICENSE               # 开源许可证
 ```
